@@ -4,10 +4,11 @@ import uuid
 import traceback
 import random
 import string
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 import jwt
 import secrets
 import hashlib
+
 from db import (
     db_user_exists, 
     db_create_user, 
@@ -15,6 +16,16 @@ from db import (
     db_update_user,
     db_delete_user,
     db_get_user_by_email
+)
+
+from db_students import (
+    db_create_student,
+    db_get_student_by_id,
+    db_get_student_by_email,
+    db_student_exists,
+    db_list_students,
+    db_update_student,
+    db_delete_student
 )
 
 # =====================
@@ -27,15 +38,19 @@ JWT_ALGO = "HS256"
 # UTILS
 # =====================
 def response(body, status=200):
+    def default_serializer(obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        return str(obj)
+
     return {
         "statusCode": status,
         "headers": {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*"
         },
-        "body": json.dumps(body)
+        "body": json.dumps(body, default=default_serializer)
     }
-
 def generate_password(length=10):
     chars = string.ascii_letters + string.digits
     return "".join(random.choice(chars) for _ in range(length))
@@ -80,13 +95,16 @@ def authorize(headers, allowed_roles=None):
     auth = headers.get("Authorization") or headers.get("authorization")
     if not auth or not auth.startswith("Bearer "):
         return None, "Unauthorized"
+    
     token = auth.replace("Bearer ", "")
     try:
         user = decode_token(token)
     except Exception:
         return None, "Invalid token"
+    
     if allowed_roles and user.get("role") not in allowed_roles:
         return None, "Forbidden"
+    
     return user, None
 
 def save_email_information(data):
@@ -94,7 +112,7 @@ def save_email_information(data):
     print("EMAIL QUEUED:", json.dumps(data, indent=2))
 
 # =====================
-# HANDLERS
+# USER HANDLERS
 # =====================
 def signin_handler(body, *_):
     email = body.get("email", "").lower().strip()
@@ -195,20 +213,13 @@ def get_users_handler(body, user):
         return response({"error": "Internal server error"}, 500)
 
 def update_user_handler(body, user, path_params):
-    """
-    PUT /users/{user_id}
-    Updates user information (email, full_name, role, status)
-    """
+    """PUT /users/{user_id}"""
     print("UPDATE_USER_HANDLER | START")
     try:
         user_id = path_params.get("user_id")
         if not user_id:
             return response({"error": "User ID is required"}, 400)
         
-        print(f"UPDATE_USER_HANDLER | Updating user_id: {user_id}")
-        print(f"UPDATE_USER_HANDLER | Body: {json.dumps(body)}")
-        
-        # Build updates dict from allowed fields
         updates = {}
         
         if "email" in body:
@@ -238,15 +249,10 @@ def update_user_handler(body, user, path_params):
         if not updates:
             return response({"error": "No valid fields to update"}, 400)
         
-        print(f"UPDATE_USER_HANDLER | Updates: {json.dumps(updates)}")
-        
-        # Perform update
         updated_user = db_update_user(user_id, updates)
         
         if not updated_user:
             return response({"error": "User not found"}, 404)
-        
-        print(f"UPDATE_USER_HANDLER | Success: {json.dumps(updated_user)}")
         
         return response({
             "message": "User updated successfully",
@@ -261,29 +267,19 @@ def update_user_handler(body, user, path_params):
         print(f"UPDATE_USER_HANDLER | ERROR: {str(e)}")
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
-    finally:
-        print("UPDATE_USER_HANDLER | END")
 
 def delete_user_handler(body, user, path_params):
-    """
-    DELETE /users/{user_id}
-    Deletes a user by user_id or email
-    """
+    """DELETE /users/{user_id}"""
     print("DELETE_USER_HANDLER | START")
     try:
         user_id = path_params.get("user_id")
         if not user_id:
             return response({"error": "User ID is required"}, 400)
         
-        print(f"DELETE_USER_HANDLER | Deleting user_id: {user_id}")
-        
-        # Attempt deletion
         deleted = db_delete_user(user_id)
         
         if not deleted:
             return response({"error": "User not found"}, 404)
-        
-        print(f"DELETE_USER_HANDLER | Successfully deleted user_id: {user_id}")
         
         return response({
             "message": "User deleted successfully",
@@ -294,17 +290,244 @@ def delete_user_handler(body, user, path_params):
         print(f"DELETE_USER_HANDLER | ERROR: {str(e)}")
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
-    finally:
-        print("DELETE_USER_HANDLER | END")
+
+# =====================
+# STUDENT HANDLERS
+# =====================
+
+def create_student_handler(body, user):
+    """POST /students - Create a new student profile"""
+    try:
+        print("CREATE STUDENT:", body)
+        
+        # Required fields
+        first_name = body.get("firstName", "").strip()
+        last_name = body.get("lastName", "").strip()
+        email = body.get("email", "").lower().strip()
+        mobile_number = body.get("mobileNumber", "").strip()
+        
+        if not all([first_name, last_name, email, mobile_number]):
+            return response({
+                "error": "First name, last name, email, and mobile number are required"
+            }, 400)
+        
+        # Check if student already exists
+        if db_student_exists(email):
+            return response({"error": "Student with this email already exists"}, 409)
+        
+        # Optional fields
+        date_of_birth = body.get("dateOfBirth")
+        gender = body.get("gender")
+        profile_photo_url = body.get("profilePhotoUrl"," ")
+        emergency_contact = body.get("emergencyContact")
+        residential_address = body.get("residentialAddress")
+        current_status = body.get("currentStatus", "Student")
+        highest_qualification = body.get("highestQualification")
+        id_proof_type = body.get("idProofType", "Aadhaar_Card")
+        id_number = body.get("idNumber")
+        lead_source = body.get("leadSource", "Instagram_Ad")
+        
+        # Create student
+        created = db_create_student(
+            first_name=first_name,
+            last_name=last_name,
+            email=email,
+            mobile_number=mobile_number,
+            date_of_birth=date_of_birth,
+            gender=gender,
+            profile_photo_url=profile_photo_url,
+            emergency_contact=emergency_contact,
+            residential_address=residential_address,
+            current_status=current_status,
+            highest_qualification=highest_qualification,
+            id_proof_type=id_proof_type,
+            id_number=id_number,
+            lead_source=lead_source
+        )
+        
+        # Send welcome email (optional)
+        save_email_information({
+            "type": "student_welcome",
+            "to": [email],
+            "data": {
+                "name": f"{first_name} {last_name}",
+                "email": email
+            }
+        })
+        
+        return response({
+            "message": "Student profile created successfully",
+            "student_id": created["student_id"],
+            "first_name": first_name,
+            "last_name": last_name,
+            "email": email
+        }, 201)
+        
+    except Exception as e:
+        print("CREATE STUDENT ERROR:", e)
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
+def get_students_handler(body, user):
+    """GET /students - List students with pagination and search"""
+    print("GET_STUDENTS_HANDLER | START")
+    try:
+        limit = int(body.get("limit", 25))
+        offset = int(body.get("offset", 0))
+        search = body.get("search")
+        status = body.get("status")
+        
+        result = db_list_students(
+            limit=limit,
+            offset=offset,
+            search=search,
+            status=status
+        )
+        
+        return response({
+            "students": result["students"],
+            "pagination": {
+                "total": result["total"],
+                "limit": result["limit"],
+                "offset": result["offset"],
+                "hasNext": result["hasNext"],
+                "next_offset": result["next_offset"],
+            }
+        }, 200)
+        
+    except ValueError as ve:
+        print("GET_STUDENTS_HANDLER | VALIDATION ERROR:", ve)
+        return response({"error": "Invalid pagination parameters"}, 400)
+    except Exception as e:
+        print("GET_STUDENTS_HANDLER | ERROR:", str(e))
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
+def get_student_handler(body, user, path_params):
+    """GET /students/{student_id} - Get single student by ID"""
+    print("GET_STUDENT_HANDLER | START",path_params)
+    try:
+        student_id = path_params.get("student_id")
+        if not student_id:
+            return response({"error": "Student ID is required"}, 400)
+        
+        student = db_get_student_by_id(student_id)
+        
+        if not student:
+            return response({"error": "Student not found"}, 404)
+        
+        return response({"student": student}, 200)
+        
+    except Exception as e:
+        print("GET_STUDENT_HANDLER | ERROR:", str(e))
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
+def update_student_handler(body, user, path_params):
+    """PUT /students/{student_id} - Update student profile"""
+    print("UPDATE_STUDENT_HANDLER | START")
+    try:
+        student_id = path_params.get("student_id")
+        if not student_id:
+            return response({"error": "Student ID is required"}, 400)
+        
+        # Build updates dict from allowed fields
+        updates = {}
+        
+        # Map frontend field names to database field names
+        field_mapping = {
+            "firstName": "first_name",
+            "lastName": "last_name",
+            "dateOfBirth": "date_of_birth",
+            "gender": "gender",
+            "profilePhotoUrl": "profile_photo_url",
+            "email": "email",
+            "mobileNumber": "mobile_number",
+            "emergencyContact": "emergency_contact",
+            "residentialAddress": "residential_address",
+            "currentStatus": "current_status",
+            "highestQualification": "highest_qualification",
+            "idProofType": "id_proof_type",
+            "idNumber": "id_number",
+            "leadSource": "lead_source"
+        }
+        
+        for frontend_key, db_key in field_mapping.items():
+            if frontend_key in body:
+                value = body[frontend_key]
+                # Strip strings, keep None as is
+                if isinstance(value, str):
+                    value = value.strip()
+                    if db_key == "email":
+                        value = value.lower()
+                updates[db_key] = value
+        
+        if not updates:
+            return response({"error": "No valid fields to update"}, 400)
+        
+        # Validate status if provided
+        if "current_status" in updates:
+            valid_statuses = ["Student", "Working Professional", "Freelancer", "Unemployed"]
+            if updates["current_status"] not in valid_statuses:
+                return response({"error": "Invalid status"}, 400)
+        
+        # Perform update
+        updated_student = db_update_student(student_id, updates)
+        
+        if not updated_student:
+            return response({"error": "Student not found"}, 404)
+        
+        return response({
+            "message": "Student profile updated successfully",
+            "student": updated_student
+        }, 200)
+        
+    except Exception as e:
+        print(f"UPDATE_STUDENT_HANDLER | ERROR: {str(e)}")
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
+def delete_student_handler(body, user, path_params):
+    """DELETE /students/{student_id} - Delete student profile"""
+    print("DELETE_STUDENT_HANDLER | START")
+    try:
+        student_id = path_params.get("student_id")
+        if not student_id:
+            return response({"error": "Student ID is required"}, 400)
+        
+        # Get student info before deletion (for logging/email)
+        student = db_get_student_by_id(student_id)
+        
+        if not student:
+            return response({"error": "Student not found"}, 404)
+        
+        # Attempt deletion
+        deleted = db_delete_student(student_id)
+        
+        if not deleted:
+            return response({"error": "Failed to delete student"}, 500)
+        
+        return response({
+            "message": "Student profile deleted successfully",
+            "student_id": student_id
+        }, 200)
+        
+    except Exception as e:
+        print(f"DELETE_STUDENT_HANDLER | ERROR: {str(e)}")
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
 
 # =====================
 # ROUTES
 # =====================
 ROUTES = {
+    # Auth routes
     ("POST", "signin"): {
         "handler": signin_handler,
         "roles": None
     },
+    
+    # User routes
     ("POST", "users"): {
         "handler": create_user_handler,
         "roles": None
@@ -322,6 +545,31 @@ ROUTES = {
         "handler": delete_user_handler,
         "roles": None,
         "has_path_params": True
+    },
+    
+    # Student routes
+    ("POST", "students"): {
+        "handler": create_student_handler,
+        "roles": None
+    },
+    ("GET", "students"): {
+        "handler": get_students_handler,
+        "roles": None
+    },
+    ("GET", "student"): {
+        "handler": get_student_handler,
+        "roles": None,
+        "has_path_params": True
+    },
+    ("PUT", "students"): {
+        "handler": update_student_handler,
+        "roles": None,
+        "has_path_params": True
+    },
+    ("DELETE", "students"): {
+        "handler": delete_student_handler,
+        "roles": None,
+        "has_path_params": True
     }
 }
 
@@ -336,13 +584,17 @@ def lambda_handler(event, context):
         path_parts = path.split("/")
         
         # Extract base path and path parameters
-        base_path = path_parts[-1] if len(path_parts) == 1 else path_parts[0]
+        base_path = path_parts[0] if path_parts else ""
         path_params = {}
         
-        # Handle routes like /users/{user_id}
-        if len(path_parts) > 1 and path_parts[0] == "users":
-            base_path = "users"
-            path_params["user_id"] = path_parts[1]
+        # Handle routes like /users/{user_id} or /students/{student_id}
+        if len(path_parts) > 1:
+            if path_parts[0] == "users":
+                base_path = "users"
+                path_params["user_id"] = path_parts[1]
+            elif path_parts[0] == "students" or path_parts[0] == "student":
+                base_path = "student" if method == "GET" else "students"
+                path_params["student_id"] = path_parts[1]
         
         route = ROUTES.get((method, base_path))
         
