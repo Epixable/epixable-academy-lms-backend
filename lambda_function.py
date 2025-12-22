@@ -8,7 +8,13 @@ from datetime import datetime, date, timedelta
 import jwt
 import secrets
 import hashlib
-
+from db_course import (
+    db_create_course,
+    db_get_course_by_id,
+    db_update_course,
+    db_delete_course,
+    db_list_courses
+)
 from db import (
     db_user_exists, 
     db_create_user, 
@@ -517,113 +523,234 @@ def delete_student_handler(body, user, path_params):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
+
+
+def create_course_handler(body, user):
+    """POST /courses - Create a new course"""
+    try:
+        print("CREATE_COURSE:", body)
+        title = body.get("title", "").strip()
+        description = body.get("description", "").strip()
+        status = body.get("status", "DRAFT").upper()
+        thumbnail_url = body.get("thumbnailUrl", "").strip()
+
+        if not title:
+            return response({"error": "Course title is required"}, 400)
+        if status not in ("DRAFT", "PUBLISHED", "ARCHIVED"):
+            return response({"error": "Invalid status"}, 400)
+
+        course = db_create_course(
+            title=title,
+            description=description,
+            status=status,
+            thumbnail_url=thumbnail_url
+        )
+        print("COURSE:", course)
+        return response({
+            "message": "Course created successfully",
+            "course": course
+        }, 201)
+
+    except Exception as e:
+        print("CREATE_COURSE_ERROR:", e)
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
+
+def update_course_handler(body, user, path_params):
+    """PUT /courses/{course_id} - Update course"""
+    try:
+        course_id = path_params.get("course_id")
+        if not course_id:
+            return response({"error": "Course ID is required"}, 400)
+
+        updates = {}
+        if "title" in body:
+            updates["title"] = body["title"].strip()
+        if "description" in body:
+            updates["description"] = body["description"].strip()
+        if "status" in body:
+            status = body["status"].upper()
+            if status not in ("DRAFT", "PUBLISHED", "ARCHIVED"):
+                return response({"error": "Invalid status"}, 400)
+            updates["status"] = status
+        if "thumbnailUrl" in body:
+            updates["thumbnail_url"] = body["thumbnailUrl"].strip()
+
+        if not updates:
+            return response({"error": "No valid fields to update"}, 400)
+
+        updated_course = db_update_course(course_id, updates)
+
+        if not updated_course:
+            return response({"error": "Course not found"}, 404)
+
+        return response({
+            "message": "Course updated successfully",
+            "course": updated_course
+        }, 200)
+
+    except Exception as e:
+        print("UPDATE_COURSE_ERROR:", e)
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
+
+def delete_course_handler(body, user, path_params):
+    """DELETE /courses/{course_id} - Delete course"""
+    try:
+        course_id = path_params.get("course_id")
+        if not course_id:
+            return response({"error": "Course ID is required"}, 400)
+
+        deleted = db_delete_course(course_id)
+        if not deleted:
+            return response({"error": "Course not found"}, 404)
+
+        return response({
+            "message": "Course deleted successfully",
+            "course_id": course_id
+        }, 200)
+
+    except Exception as e:
+        print("DELETE_COURSE_ERROR:", e)
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+def get_courses_handler(body, user):
+    """GET /courses - List courses with pagination, search, and status filtering"""
+    print("GET_COURSES_HANDLER | START")
+    try:
+        limit = int(body.get("limit", 25))
+        offset = int(body.get("offset", 0))
+        search = body.get("search", "").strip() if body.get("search") else None
+        status = body.get("status")  # Optional filter: DRAFT, PUBLISHED, ARCHIVED
+
+        result = db_list_courses(
+            limit=limit,
+            offset=offset,
+            search=search,
+            status=status
+        )
+
+        return response({
+            "courses": result["courses"],
+            "pagination": {
+                "total": result["total"],
+                "limit": result["limit"],
+                "offset": result["offset"],
+                "hasNext": result["hasNext"],
+                "next_offset": result["next_offset"],
+            }
+        }, 200)
+
+    except ValueError as ve:
+        print("GET_COURSES_HANDLER | VALIDATION ERROR:", ve)
+        return response({"error": "Invalid pagination parameters"}, 400)
+    except Exception as e:
+        print("GET_COURSES_HANDLER | ERROR:", str(e))
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
 # =====================
 # ROUTES
 # =====================
-ROUTES = {
-    # Auth routes
-    ("POST", "signin"): {
-        "handler": signin_handler,
-        "roles": None
-    },
-    
-    # User routes
-    ("POST", "users"): {
-        "handler": create_user_handler,
-        "roles": None
-    },
-    ("GET", "users"): {
-        "handler": get_users_handler,
-        "roles": None
-    },
-    ("PUT", "users"): {
-        "handler": update_user_handler,
-        "roles": None,
-        "has_path_params": True
-    },
-    ("DELETE", "users"): {
-        "handler": delete_user_handler,
-        "roles": None,
-        "has_path_params": True
-    },
-    
-    # Student routes
-    ("POST", "students"): {
-        "handler": create_student_handler,
-        "roles": None
-    },
-    ("GET", "students"): {
-        "handler": get_students_handler,
-        "roles": None
-    },
-    ("GET", "student"): {
-        "handler": get_student_handler,
-        "roles": None,
-        "has_path_params": True
-    },
-    ("PUT", "students"): {
-        "handler": update_student_handler,
-        "roles": None,
-        "has_path_params": True
-    },
-    ("DELETE", "students"): {
-        "handler": delete_student_handler,
-        "roles": None,
-        "has_path_params": True
-    }
+import re
+
+FIXED_ROUTES = {
+    ("POST", "signin"): {"handler": signin_handler, "roles": None},
+    ("POST", "users"): {"handler": create_user_handler, "roles": None},
+    ("GET", "users"): {"handler": get_users_handler, "roles": None},
+    ("GET", "students"): {"handler": get_students_handler, "roles": None},
+    ("POST", "students"): {"handler": create_student_handler, "roles": None},
+    ("POST", "courses"): {"handler": create_course_handler, "roles": None},
+     ("GET", "courses"): {"handler": get_courses_handler, "roles": None}
 }
 
-# =====================
-# LAMBDA ENTRY
-# =====================
+PARAM_ROUTES = {
+    "users": {
+        "PUT": {
+            "pattern": re.compile(r"^users/(?P<user_id>[^/]+)$"),
+            "handler": update_user_handler,
+            "roles": None,
+        },
+        "DELETE": {
+            "pattern": re.compile(r"^users/(?P<user_id>[^/]+)$"),
+            "handler": delete_user_handler,
+            "roles": None,
+        },
+    },
+    "students": {
+        "GET": {
+            "pattern": re.compile(r"^students/(?P<student_id>[^/]+)$"),
+            "handler": get_student_handler,
+            "roles": None,
+        },
+        "PUT": {
+            "pattern": re.compile(r"^students/(?P<student_id>[^/]+)$"),
+            "handler": update_student_handler,
+            "roles": None,
+        },
+        "DELETE": {
+            "pattern": re.compile(r"^students/(?P<student_id>[^/]+)$"),
+            "handler": delete_student_handler,
+            "roles": None,
+        },
+    },
+    "courses": {
+        "PUT": {
+            "pattern": re.compile(r"^courses/(?P<course_id>[^/]+)$"),
+            "handler": update_course_handler,
+            "roles": None,
+        },
+        "DELETE": {
+            "pattern": re.compile(r"^courses/(?P<course_id>[^/]+)$"),
+            "handler": delete_course_handler,
+            "roles": None,
+        },
+    },
+}
+
 def lambda_handler(event, context):
-    print("EVENT:", json.dumps(event))
-    try:
-        method = event.get("httpMethod")
-        path = event.get("path", "").strip("/")
-        path_parts = path.split("/")
-        
-        # Extract base path and path parameters
-        base_path = path_parts[0] if path_parts else ""
-        path_params = {}
-        
-        # Handle routes like /users/{user_id} or /students/{student_id}
-        if len(path_parts) > 1:
-            if path_parts[0] == "users":
-                base_path = "users"
-                path_params["user_id"] = path_parts[1]
-            elif path_parts[0] == "students" or path_parts[0] == "student":
-                base_path = "student" if method == "GET" else "students"
-                path_params["student_id"] = path_parts[1]
-        
-        route = ROUTES.get((method, base_path))
-        
-        if not route:
-            return response({"error": "Route not found"}, 404)
-        
-        body = json.loads(event.get("body") or "{}")
-        headers = event.get("headers") or {}
-        
-        # Handle query parameters for GET requests
-        if method == "GET":
-            query_params = event.get("queryStringParameters") or {}
-            body.update(query_params)
-        
-        # Authorization
-        if route["roles"] is None:
-            user = None
-        else:
+    print("EVENT RECEIVED:", json.dumps(event))
+    
+    method = event.get("httpMethod")
+    path = event.get("path", "").strip("/")
+    body = json.loads(event.get("body") or "{}")
+    headers = event.get("headers") or {}
+
+    print(f"[INFO] HTTP Method: {method}, Path: {path}")
+    
+   
+    route = FIXED_ROUTES.get((method, path))
+    if route:
+        print(f"[INFO] Matched FIXED route: {(method, path)}")
+        user = None
+        if route.get("roles"):
             user, err = authorize(headers, route["roles"])
             if err:
+                print(f"[WARN] Authorization failed: {err}")
                 return response({"error": err}, 401)
-        
-        # Call handler with or without path_params
-        if route.get("has_path_params"):
+        return route["handler"](body, user)
+
+    
+    base_path = path.split("/")[0]
+    method_routes = PARAM_ROUTES.get(base_path, {})
+    route = method_routes.get(method)
+    print(f"[DEBUG] Base path: {base_path}, Method routes found: {bool(route)}")
+
+    if route:
+        match = route["pattern"].match(path)
+        if match:
+            path_params = match.groupdict()
+            print(f"[INFO] Matched PARAM route: {method} {path}, Path params: {path_params}")
+            user = None
+            if route.get("roles"):
+                user, err = authorize(headers, route["roles"])
+                if err:
+                    print(f"[WARN] Authorization failed: {err}")
+                    return response({"error": err}, 401)
             return route["handler"](body, user, path_params)
         else:
-            return route["handler"](body, user)
-            
-    except Exception as e:
-        print("LAMBDA ERROR:", e)
-        traceback.print_exc()
-        return response({"error": "Internal server error"}, 500)
+            print(f"[WARN] Pattern did not match for param route: {route['pattern'].pattern}")
+
+    print(f"[ERROR] Route not found for Method: {method}, Path: {path}")
+    return response({"error": "Route not found"}, 404)
