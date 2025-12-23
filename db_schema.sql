@@ -72,6 +72,7 @@ CREATE TABLE courses (
     title VARCHAR(255) NOT NULL,
     description TEXT,
     thumbnail_url TEXT,
+    learning_points TEXT[] DEFAULT '{}',
     status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -82,9 +83,11 @@ CREATE TABLE modules (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     course_id UUID NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
     title VARCHAR(255) NOT NULL,
+    description TEXT,
     position INT NOT NULL,
     is_published BOOLEAN DEFAULT false,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- LESSONS
@@ -92,11 +95,13 @@ CREATE TABLE lessons (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     module_id UUID NOT NULL REFERENCES modules(id) ON DELETE CASCADE,
     title VARCHAR(255) NOT NULL,
-    type VARCHAR(20) NOT NULL, 
-    content_url TEXT,          
+    type VARCHAR(100) NOT NULL,           
+    content TEXT,                          
+    video_s3_key TEXT,                     
+    resources_s3_keys TEXT[] DEFAULT '{}',
     duration_minutes INT,
     position INT NOT NULL,
     is_published BOOLEAN DEFAULT false,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-
