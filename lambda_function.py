@@ -24,7 +24,11 @@ from db_course import (
     db_delete_module,
     db_get_lesson_by_id,
     db_update_lesson,
-    db_delete_lesson
+    db_delete_lesson,
+    db_list_batches,
+    db_create_enrollment,
+    db_list_enrollments,
+    db_delete_enrollment
 )
 from db import (
     db_user_exists, 
@@ -197,7 +201,7 @@ def create_user_handler(body, *_):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
-def get_users_handler(body, user):
+def get_users_handler(body, user, path_params=None, search_value=None):
     """GET /users with pagination and search"""
     print("GET_USERS_HANDLER | START")
     try:
@@ -229,7 +233,7 @@ def get_users_handler(body, user):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
-def update_user_handler(body, user, path_params):
+def update_user_handler(body, user, path_params,search_value=None):
     """PUT /users/{user_id}"""
     print("UPDATE_USER_HANDLER | START")
     try:
@@ -285,7 +289,7 @@ def update_user_handler(body, user, path_params):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
-def delete_user_handler(body, user, path_params):
+def delete_user_handler(body, user, path_params,search_value=None):
     """DELETE /users/{user_id}"""
     print("DELETE_USER_HANDLER | START")
     try:
@@ -312,7 +316,7 @@ def delete_user_handler(body, user, path_params):
 # STUDENT HANDLERS
 # =====================
 
-def create_student_handler(body, user):
+def create_student_handler(body, users, path_params=None, search_value=None):
     """POST /students - Create a new student profile"""
     try:
         print("CREATE STUDENT:", body)
@@ -385,22 +389,23 @@ def create_student_handler(body, user):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
-def get_students_handler(body, user):
+def get_students_handler(body, user, path_params=None, search_value=None):
     """GET /students - List students with pagination and search"""
     print("GET_STUDENTS_HANDLER | START")
     try:
+        # Use body first, fallback to query param search_value
         limit = int(body.get("limit", 25))
         offset = int(body.get("offset", 0))
-        search = body.get("search")
+        search = search_value or body.get("search")
         status = body.get("status")
-        
+
         result = db_list_students(
             limit=limit,
             offset=offset,
             search=search,
             status=status
         )
-        
+
         return response({
             "students": result["students"],
             "pagination": {
@@ -411,7 +416,7 @@ def get_students_handler(body, user):
                 "next_offset": result["next_offset"],
             }
         }, 200)
-        
+
     except ValueError as ve:
         print("GET_STUDENTS_HANDLER | VALIDATION ERROR:", ve)
         return response({"error": "Invalid pagination parameters"}, 400)
@@ -420,7 +425,7 @@ def get_students_handler(body, user):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
-def get_student_handler(body, user, path_params):
+def get_student_handler(body, user, path_params,search_value=None):
     """GET /students/{student_id} - Get single student by ID"""
     print("GET_STUDENT_HANDLER | START",path_params)
     try:
@@ -440,7 +445,7 @@ def get_student_handler(body, user, path_params):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
-def update_student_handler(body, user, path_params):
+def update_student_handler(body, user, path_params,search_value=None):
     """PUT /students/{student_id} - Update student profile"""
     print("UPDATE_STUDENT_HANDLER | START")
     try:
@@ -504,7 +509,7 @@ def update_student_handler(body, user, path_params):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
-def delete_student_handler(body, user, path_params):
+def delete_student_handler(body, user, path_params,search_value=None):
     """DELETE /students/{student_id} - Delete student profile"""
     print("DELETE_STUDENT_HANDLER | START")
     try:
@@ -536,7 +541,7 @@ def delete_student_handler(body, user, path_params):
 
 
 
-def create_course_handler(body, user):
+def create_course_handler(body, user, path_params=None, search_value=None):
     """POST /courses - Create a new course"""
     try:
         print("CREATE_COURSE:", body)
@@ -577,7 +582,7 @@ def create_course_handler(body, user):
         return response({"error": "Internal server error"}, 500)
 
 
-def update_course_handler(body, user, path_params):
+def update_course_handler(body, user, path_params, search_value=None):
     """PUT /courses/{course_id} - Update course"""
     try:
         print("UPDATE_COURSE:", body)
@@ -622,7 +627,7 @@ def update_course_handler(body, user, path_params):
         return response({"error": "Internal server error"}, 500)
 
 
-def delete_course_handler(body, user, path_params):
+def delete_course_handler(body, user, path_params, search_value=None):
     """DELETE /courses/{course_id} - Delete course"""
     try:
         course_id = path_params.get("course_id")
@@ -642,14 +647,17 @@ def delete_course_handler(body, user, path_params):
         print("DELETE_COURSE_ERROR:", e)
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
-def get_courses_handler(body, user):
-    """GET /courses - List courses with pagination, search, and status filtering"""
+def get_courses_handler(body, user, path_params=None, search_value=None):
+    """
+    GET /courses - List courses with pagination, search by title, and optional status filtering
+    """
     print("GET_COURSES_HANDLER | START")
     try:
         limit = int(body.get("limit", 25))
         offset = int(body.get("offset", 0))
-        search = body.get("search", "").strip() if body.get("search") else None
-        status = body.get("status")  # Optional filter: DRAFT, PUBLISHED, ARCHIVED
+
+        search = search_value.strip() if search_value else (body.get("search", "").strip() if body.get("search") else None)
+        status = body.get("status")
 
         result = db_list_courses(
             limit=limit,
@@ -677,8 +685,7 @@ def get_courses_handler(body, user):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
-
-def get_course_by_id_handler(body, user,path_params):
+def get_course_by_id_handler(body, user,path_params,search_value=None):
     """GET /courses/:id - Get a single course with modules and lesson info"""
     print("GET_COURSE_BY_ID_HANDLER | START")
     try:
@@ -697,7 +704,7 @@ def get_course_by_id_handler(body, user,path_params):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
-def create_module_handler(body, user, path_params):
+def create_module_handler(body, user, path_params, search_value=None):
     try:
         print("CREATE_MODULE:", body)
         course_id = path_params.get("course_id")
@@ -742,7 +749,7 @@ def create_module_handler(body, user, path_params):
         return response({"error": "Internal server error"}, 500)
 
 
-def get_module_with_lessons_handler(body, user, path_params):
+def get_module_with_lessons_handler(body, user, path_params,search_value=None):
     """
     GET /courses/{course_id}/modules/{module_id}
     """
@@ -785,7 +792,7 @@ def get_module_with_lessons_handler(body, user, path_params):
         return response({"error": "Internal server error"}, 500)
 
 
-def get_course_by_id(body, user, path_params):
+def get_course_by_id(body, user, path_params,search_value=None):
     """
     GET /courses/{course_id}
     """
@@ -825,7 +832,7 @@ def get_course_by_id(body, user, path_params):
         return response({"error": "Internal server error"}, 500)
 
 
-def create_lesson_handler(body, user, path_params=None):
+def create_lesson_handler(body, user, path_params=None, search_value=None):
     """
     POST /lessons
     Body must include: course_id, module_id, title, type, optional: id, content, video_s3_key, resources_s3_keys, duration_minutes, position, is_published
@@ -896,7 +903,7 @@ def create_lesson_handler(body, user, path_params=None):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
-def update_module_handler(body, user, path_params):
+def update_module_handler(body, user, path_params,search_value=None):
     try:
         print("UPDATE_MODULE:", body)
 
@@ -943,7 +950,7 @@ def update_module_handler(body, user, path_params):
         print("UPDATE_MODULE_ERROR:", e)
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
-def delete_module_handler(body, user, path_params):
+def delete_module_handler(body, user, path_params, search_value=None):
     try:
         print("DELETE_MODULE")
 
@@ -971,7 +978,7 @@ def delete_module_handler(body, user, path_params):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
-def get_lesson_handler(body,user,path_params):
+def get_lesson_handler(body,user,path_params,search_value=None):
     """
     GET /lessons/<lesson_id>
     Fetch a single lesson by ID.
@@ -991,7 +998,7 @@ def get_lesson_handler(body,user,path_params):
         print("GET_LESSON_ERROR:", str(e))
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
-def delete_lesson_handler(body, user, path_params):
+def delete_lesson_handler(body, user, path_params,search_value=None):
     try:
         print("DELETE_LESSON")
 
@@ -1015,7 +1022,7 @@ def delete_lesson_handler(body, user, path_params):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
-def update_lesson_handler(body, user, path_params):
+def update_lesson_handler(body, user, path_params,search_value=None):
     try:
         print("UPDATE_LESSON:", body)
         print("PATH_PARAMS:", path_params)
@@ -1064,6 +1071,121 @@ def update_lesson_handler(body, user, path_params):
         print("UPDATE_LESSON_ERROR:", e)
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
+
+def get_batches_handler(body, user, path_params=None,search_value=None):
+    """
+    GET /courses/{course_id}/batches - List batches for a specific course with optional search and pagination
+    """
+    print("GET_BATCHES_HANDLER | START")
+
+    try:
+        if not path_params or "course_id" not in path_params:
+            return response({"error": "course_id is required in path"}, 400)
+        
+        course_id = path_params["course_id"]
+
+        limit = int(body.get("limit", 25))
+        offset = int(body.get("offset", 0))
+        search_value = body.get("search", "").strip() if body.get("search") else None
+
+        result = db_list_batches(
+            course_id=course_id,
+            limit=limit,
+            offset=offset,
+            search=search_value
+        )
+
+        return response({
+            "batches": result["batches"],
+            "pagination": {
+                "total": result["total"],
+                "limit": result["limit"],
+                "offset": result["offset"],
+                "hasNext": result["hasNext"],
+                "next_offset": result["next_offset"],
+            }
+        }, 200)
+
+    except ValueError as ve:
+        print("GET_BATCHES_HANDLER | VALIDATION ERROR:", ve)
+        return response({"error": "Invalid pagination parameters"}, 400)
+    except Exception as e:
+        print("GET_BATCHES_HANDLER | ERROR:", str(e))
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+def create_enrollment_handler(body, user, path_params=None,search_value=None):
+    """
+    POST /enrollments - Create a new enrollment
+    Body must include: student_id, course_id, batch_id, start_date
+    """
+    try:
+        print("CREATE_ENROLLMENT:", body)
+        student_id = body.get("student_id")
+        course_id = body.get("course_id")
+        batch_id = body.get("batch_id")
+        start_date = body.get("start_date")
+
+        if not all([student_id, course_id, batch_id, start_date]):
+            return response({"error": "student_id, course_id, batch_id, and start_date are required"}, 400)
+        print("input sucess")
+        enrollment = db_create_enrollment(student_id, course_id, batch_id, start_date)
+        return response({
+            "message": "Enrollment created successfully",
+            "enrollment_id": enrollment["enrollment_id"],
+            "enrollment_number": enrollment["enrollment_number"],
+            "status": enrollment["status"],
+            "start_date": enrollment["start_date"]
+        }, 201)
+
+    except ValueError as ve:
+        return response({"error": str(ve)}, 400)
+    except Exception as e:
+        print("CREATE_ENROLLMENT_ERROR:", e)
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
+def get_enrollments_handler(body, user, path_params=None,search_value=None):
+    """
+    GET /enrollments - List enrollments with student, course, and batch info
+    Query params: limit, offset, search, status
+    """
+    try:
+        limit = int(body.get("limit", 25))
+        offset = int(body.get("offset", 0))
+        search = search_value if search_value else body.get("search", "").strip()
+        status = search_value if search_value else body.get("status", "").strip()
+
+        data = db_list_enrollments(limit=limit, offset=offset, search=search, status=status)
+        return response(data, 200)
+
+    except Exception as e:
+        print("GET_ENROLLMENTS_ERROR:", e)
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
+def delete_enrollment_handler(body, user, path_params, search_value=None):
+    """DELETE /enrollments/{enrollment_id}"""
+    print("DELETE_ENROLLMENT_HANDLER | START")
+    try:
+        enrollment_id = path_params.get("enrollment_id")
+        if not enrollment_id:
+            return response({"error": "Enrollment ID is required"}, 400)
+        
+        deleted = db_delete_enrollment(enrollment_id)
+        
+        if not deleted:
+            return response({"error": "Enrollment not found"}, 404)
+        
+        return response({
+            "message": "Enrollment deleted successfully",
+            "enrollment_id": enrollment_id
+        }, 200)
+        
+    except Exception as e:
+        print(f"DELETE_ENROLLMENT_HANDLER | ERROR: {str(e)}")
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
 # =====================
 # ROUTES
 # =====================
@@ -1084,6 +1206,8 @@ FIXED_ROUTES = {
     ("POST", "courses"): {"handler": create_course_handler, "roles": None},
     ("GET", "courses"): {"handler": get_courses_handler, "roles": None},
     ("POST", "lessons"): {"handler": create_lesson_handler, "roles": None},
+    ("POST", "enrollments"): {"handler": create_enrollment_handler, "roles": None},
+    ("GET", "enrollments"): {"handler": get_enrollments_handler, "roles": None},
 }
 
 # Parameterized routes (grouped by base path and method)
@@ -1127,7 +1251,9 @@ PARAM_ROUTES = {
             },
             {"pattern": re.compile(r"^courses/(?P<course_id>[^/]+)/details$"), "handler": get_course_by_id_handler, "roles": None},
             {"pattern": re.compile(r"^courses/(?P<course_id>[^/]+)/modules/(?P<module_id>[^/]+)$"), "handler": get_module_with_lessons_handler, "roles": None},
+            {"pattern": re.compile(r"^courses/(?P<course_id>[^/]+)/batches$"),"handler": get_batches_handler,"roles": None},
         ],
+
         "PUT": [
             {
             "pattern": re.compile(
@@ -1149,9 +1275,15 @@ PARAM_ROUTES = {
             {"pattern": re.compile(r"^courses/(?P<course_id>[^/]+)$"), "handler": delete_course_handler, "roles": None},
         ],
         "POST": [
-            {"pattern": re.compile(r"^courses/(?P<course_id>[^/]+)/modules$"), "handler": create_module_handler, "roles": None},
+            {"pattern": re.compile(r"^courses/(?P<course_id>[^/]+)/modules$"), "handler": create_module_handler, "roles": None}
         ],
-    },
+    }
+    ,
+    "enrollments": {
+        "DELETE": [
+            {"pattern": re.compile(r"^enrollments/(?P<enrollment_id>[^/]+)$"), "handler": delete_enrollment_handler, "roles": None},
+        ],
+    }
 }
 
 # =========================
@@ -1166,7 +1298,10 @@ def lambda_handler(event, context):
     body = json.loads(event.get("body") or "{}")
     headers = event.get("headers") or {}
 
-    print(f"[INFO] HTTP Method: {method}, Path: {path}")
+    # Extract query params (from API Gateway)
+    query_params = event.get("queryStringParameters") or {}
+    search_value = query_params.get("search", None)
+    print(f"[INFO] HTTP Method: {method}, Path: {path}, Search: {search_value}")
 
     # -------------------------
     # 1️⃣ Try fixed routes first
@@ -1180,7 +1315,8 @@ def lambda_handler(event, context):
             if err:
                 print(f"[WARN] Authorization failed: {err}")
                 return response({"error": err}, 401)
-        return route["handler"](body, user)
+        # Pass search_value to handler if needed
+        return route["handler"](body, user, search_value=search_value)
 
     # -------------------------
     # 2️⃣ Try parameterized routes
@@ -1199,7 +1335,8 @@ def lambda_handler(event, context):
                 if err:
                     print(f"[WARN] Authorization failed: {err}")
                     return response({"error": err}, 401)
-            return param_route["handler"](body, user, path_params)
+            # Pass search_value to handler if needed
+            return param_route["handler"](body, user, path_params, search_value=search_value)
 
     # -------------------------
     # 3️⃣ No route matched

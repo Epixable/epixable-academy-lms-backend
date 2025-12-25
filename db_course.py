@@ -7,7 +7,6 @@ import datetime
 import uuid
 from typing import Optional, Dict, Any, List
 import pg8000.dbapi as pg8000_dbapi
-
 # ---------------------------
 # PostgreSQL CONNECTION
 # ---------------------------
@@ -176,24 +175,28 @@ def db_list_courses(
     search: Optional[str] = None,
     status: Optional[str] = None
 ) -> Dict[str, Any]:
-    """List courses with pagination, search, status filtering, and counts of modules & lessons"""
+    """
+    List courses with pagination, search, status filtering, and counts of modules & lessons
+    """
     conn = pg_connect()
     cur = conn.cursor()
     try:
         params = []
         where_clauses = []
 
+        # Search by course title
         if search:
-            where_clauses.append("(title ILIKE %s OR description ILIKE %s)")
-            like = f"%{search}%"
-            params.extend([like, like])
+            where_clauses.append("title ILIKE %s")
+            params.append(f"%{search}%")
 
+        # Filter by course status
         if status:
             where_clauses.append("status = %s")
             params.append(status)
 
         where = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
+        # Fetch courses with module and lesson counts
         cur.execute(
             f"""
             SELECT 
@@ -204,9 +207,7 @@ def db_list_courses(
                 c.status, 
                 c.created_at, 
                 c.updated_at,
-                -- Count modules
                 COALESCE(m.module_count, 0) AS module_count,
-                -- Count lessons
                 COALESCE(l.lesson_count, 0) AS lesson_count
             FROM courses c
             LEFT JOIN (
@@ -224,10 +225,11 @@ def db_list_courses(
             ORDER BY c.created_at DESC
             LIMIT %s OFFSET %s
             """,
-            tuple(params + [limit, offset]),
+            tuple(params + [limit, offset])
         )
         courses = rows_to_dicts(cur, cur.fetchall())
 
+        # Total count for pagination
         cur.execute(f"SELECT COUNT(*) FROM courses {where}", tuple(params))
         total = cur.fetchone()[0]
 
@@ -239,6 +241,7 @@ def db_list_courses(
             "hasNext": (offset + limit) < total,
             "next_offset": offset + limit if (offset + limit) < total else None,
         }
+
     finally:
         cur.close()
         conn.close()
@@ -602,6 +605,194 @@ def db_delete_lesson(lesson_id: str) -> bool:
         deleted = cur.fetchone()
         conn.commit()
         return deleted is not None
+    finally:
+        cur.close()
+        conn.close()
+
+def db_list_batches(course_id: str, limit: int = 25, offset: int = 0, search: Optional[str] = None) -> Dict[str, Any]:
+    """
+    List batches for a given course_id with optional search and pagination.
+    """
+    conn = pg_connect()
+    cur = conn.cursor()
+    try:
+        params = [course_id]
+        where_clauses = ["course_id = %s"]
+
+        if search:
+            where_clauses.append("batch_name ILIKE %s")
+            params.append(f"%{search}%")
+
+        where = " AND ".join(where_clauses)
+
+        # Fetch batches
+        cur.execute(
+            f"""
+            SELECT batch_id, course_id, batch_name, batch_code, start_date, end_date,
+                   schedule_type, days_of_week, time_slot, max_capacity, current_enrollment, status
+            FROM batches
+            WHERE {where}
+            ORDER BY start_date ASC
+            LIMIT %s OFFSET %s
+            """,
+            tuple(params + [limit, offset])
+        )
+        batches = rows_to_dicts(cur, cur.fetchall())
+
+        # Get total count
+        cur.execute(
+            f"SELECT COUNT(*) FROM batches WHERE {where}",
+            tuple(params)
+        )
+        total = cur.fetchone()[0]
+
+        return {
+            "batches": batches,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "hasNext": (offset + limit) < total,
+            "next_offset": offset + limit if (offset + limit) < total else None,
+        }
+
+    finally:
+        cur.close()
+        conn.close()
+def db_create_enrollment(student_id: str, course_id: str, batch_id: str, start_date: str) -> Dict[str, Any]:
+    """
+    Check for existing enrollment, generate enrollment number, and insert a new enrollment.
+    """
+    conn = pg_connect()
+    cur = conn.cursor()
+    try:
+        # Check if the student is already enrolled in the same batch
+        cur.execute(
+            """
+            SELECT enrollment_id 
+            FROM enrollments
+            WHERE student_id = %s AND course_id = %s AND batch_id = %s
+            """,
+            (student_id, course_id, batch_id)
+        )
+        if cur.fetchone():
+            raise ValueError("Student is already enrolled in this batch.")
+
+        # Generate unique enrollment number: ENR + YYYYMMDD + 3-digit random
+        today_str = datetime.datetime.utcnow().strftime("%Y%m%d")
+        random_suffix = str(uuid.uuid4().int % 1000).zfill(3)
+        enrollment_number = f"ENR{today_str}-{random_suffix}"
+
+        enrollment_id = str(uuid.uuid4())
+        now = _now_iso()
+
+        # Insert into DB
+        cur.execute(
+            """
+            INSERT INTO enrollments (
+                enrollment_id, enrollment_number, student_id, course_id, batch_id, 
+                start_date, status, created_at, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING enrollment_id, enrollment_number, status, start_date
+            """,
+            (enrollment_id, enrollment_number, student_id, course_id, batch_id, start_date, 'active', now, now)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return dict(zip([c[0] for c in cur.description], row))
+    finally:
+        cur.close()
+        conn.close()
+
+def db_list_enrollments(limit: int = 25, offset: int = 0, search: str = None, status: str = None) -> Dict[str, Any]:
+    """
+    List enrollments with course, batch, and student info.
+    Supports optional search (student name, email, enrollment number) and status filter.
+    """
+    conn = pg_connect()
+    cur = conn.cursor()
+    try:
+        params = []
+        where_clauses = []
+
+        # Filter by search
+        if search:
+            where_clauses.append(
+                "(e.enrollment_number ILIKE %s OR s.name ILIKE %s OR s.email ILIKE %s)"
+            )
+            like = f"%{search}%"
+            params.extend([like, like, like])
+
+        # Filter by status
+        if status:
+            where_clauses.append("e.status = %s")
+            params.append(status)
+
+        where = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        # Main query with joins
+        cur.execute(
+            f"""
+            SELECT
+                e.enrollment_id,
+                e.enrollment_number,
+                e.status AS enrollment_status,
+                e.start_date,
+                s.first_name || ' ' || s.last_name AS student_name,
+                s.email AS student_email,
+                c.title AS course_name,
+                b.batch_name,
+                b.start_date || ' – ' || b.end_date || ' (' || b.time_slot || ')' AS batch_time
+            FROM enrollments e
+            JOIN students s ON e.student_id = s.student_id
+            JOIN courses c ON e.course_id = c.id
+            JOIN batches b ON e.batch_id = b.batch_id
+            {where}
+            ORDER BY e.created_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            tuple(params + [limit, offset])
+        )
+        rows = cur.fetchall()
+        columns = [c[0] for c in cur.description]
+        enrollments = [dict(zip(columns, row)) for row in rows]
+
+        # Get total count
+        cur.execute(
+            f"""
+            SELECT COUNT(*) 
+            FROM enrollments e
+            JOIN students s ON e.student_id = s.student_id
+            JOIN courses c ON e.course_id = c.id
+            JOIN batches b ON e.batch_id = b.batch_id
+            {where}
+            """,
+            tuple(params)
+        )
+        total = cur.fetchone()[0]
+
+        return {
+            "enrollments": enrollments,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "hasNext": (offset + limit) < total,
+            "next_offset": offset + limit if (offset + limit) < total else None,
+        }
+
+    finally:
+        cur.close()
+        conn.close()
+
+def db_delete_enrollment(enrollment_id: str) -> bool:
+    """Delete enrollment by ID"""
+    conn = pg_connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("DELETE FROM enrollments WHERE enrollment_id = %s", (enrollment_id,))
+        deleted = cur.rowcount > 0
+        conn.commit()
+        return deleted
     finally:
         cur.close()
         conn.close()

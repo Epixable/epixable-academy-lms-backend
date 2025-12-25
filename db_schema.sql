@@ -105,3 +105,123 @@ CREATE TABLE lessons (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+
+CREATE TABLE enrollments (
+    enrollment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    student_id VARCHAR(20) NOT NULL
+        REFERENCES students(student_id)
+        ON DELETE CASCADE,
+
+    course_id UUID NOT NULL
+        REFERENCES courses(id)
+        ON DELETE CASCADE,
+
+    batch_id UUID NOT NULL
+        REFERENCES batches(batch_id)
+        ON DELETE CASCADE,
+
+    enrollment_number VARCHAR(20) NOT NULL UNIQUE,
+
+    enrollment_date DATE DEFAULT CURRENT_DATE,
+    start_date DATE,
+    completion_date DATE,
+
+    status VARCHAR(20) DEFAULT 'active',
+
+    progress_percentage NUMERIC(5,2) DEFAULT 0,
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+
+    CONSTRAINT unique_student_course UNIQUE (student_id, course_id)
+);
+
+CREATE INDEX idx_enrollments_student_id ON enrollments(student_id);
+CREATE INDEX idx_enrollments_course_id ON enrollments(course_id);
+CREATE INDEX idx_enrollments_batch_id ON enrollments(batch_id);
+CREATE INDEX idx_enrollments_status ON enrollments(status);
+ instructor_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+CREATE TABLE batches (
+    batch_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    course_id UUID NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+
+    batch_name VARCHAR(255) NOT NULL,
+    batch_code VARCHAR(50) NOT NULL UNIQUE,
+
+    start_date DATE NOT NULL,
+    end_date DATE,
+
+    schedule_type VARCHAR(20) DEFAULT 'weekday', 
+    days_of_week TEXT[],                        
+    time_slot VARCHAR(100),               
+
+    max_capacity INT DEFAULT 30,
+    current_enrollment INT DEFAULT 0,
+
+    status VARCHAR(20) DEFAULT 'upcoming', 
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_batches_course_id ON batches(course_id);
+CREATE INDEX idx_batches_status ON batches(status);
+
+INSERT INTO batches (
+    course_id,
+    batch_name,
+    batch_code,
+    start_date,
+    end_date,
+    schedule_type,
+    days_of_week,
+    time_slot,
+    max_capacity,
+    status
+) VALUES (
+    'dd586123-35c1-458d-aeab-5c2611e90a63',
+    'Digital Marketing – Morning Batch',
+    'DGM-JAN25-M',
+    '2025-01-15',
+    '2025-04-15',
+    'weekday',
+    ARRAY['Mon','Wed','Fri'],
+    '10:00 AM – 12:00 PM',
+    30,
+    'upcoming'
+);
+
+------Trigger to update updated_at column on row modification
+CREATE OR REPLACE FUNCTION update_batch_enrollment_count()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        UPDATE batches
+        SET current_enrollment = current_enrollment + 1
+        WHERE batch_id = NEW.batch_id;
+
+    ELSIF TG_OP = 'DELETE' THEN
+        UPDATE batches
+        SET current_enrollment = current_enrollment - 1
+        WHERE batch_id = OLD.batch_id;
+
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- After insert
+CREATE TRIGGER trg_increment_batch_enrollment
+AFTER INSERT ON enrollments
+FOR EACH ROW
+EXECUTE FUNCTION update_batch_enrollment_count();
+
+-- After delete
+CREATE TRIGGER trg_decrement_batch_enrollment
+AFTER DELETE ON enrollments
+FOR EACH ROW
+EXECUTE FUNCTION update_batch_enrollment_count();
+--------------------------------------------------
