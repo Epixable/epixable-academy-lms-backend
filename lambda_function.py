@@ -48,7 +48,13 @@ from db_students import (
     db_update_student,
     db_delete_student
 )
-
+from db_batch import (
+    db_create_batch,
+    db_list_all_batches,
+    db_update_batch,
+    db_delete_batch,
+    db_list_batch_students
+)
 # =====================
 # CONFIG
 # =====================
@@ -207,7 +213,7 @@ def get_users_handler(body, user, path_params=None, search_value=None):
     try:
         limit = int(body.get("limit", 25))
         offset = int(body.get("offset", 0))
-        search = body.get("search")
+        search = search_value if search_value else  ""
         
         result = db_list_users(
             limit=limit,
@@ -1076,7 +1082,7 @@ def get_batches_handler(body, user, path_params=None,search_value=None):
     """
     GET /courses/{course_id}/batches - List batches for a specific course with optional search and pagination
     """
-    print("GET_BATCHES_HANDLER | START")
+    print("GET_BATCHES_HANDLER | START",path_params)
 
     try:
         if not path_params or "course_id" not in path_params:
@@ -1186,6 +1192,251 @@ def delete_enrollment_handler(body, user, path_params, search_value=None):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
+
+def create_batch_handler(body, user, path_params=None, search_value=None):
+    """
+    POST /batches
+    Body required:
+      - course_id
+      - batch_name
+      - batch_code
+      - start_date
+
+    Optional:
+      - end_date
+      - schedule_type
+      - days_of_week
+      - time_slot
+      - instructor_id
+      - max_capacity
+      - status
+    """
+    try:
+        print("CREATE_BATCH:", body)
+        # Required fields
+        course_id = body.get("course_id")
+        batch_name = body.get("batch_name")
+        batch_code = body.get("batch_code")
+        start_date = body.get("start_date")
+
+        if not course_id or not batch_name or not batch_code or not start_date:
+            return response(
+                {
+                    "error": "course_id, batch_name, batch_code, and start_date are required"
+                },
+                400,
+            )
+
+        # Optional fields
+        end_date = body.get("end_date")
+        schedule_type = body.get("schedule_type", "weekday")
+        days_of_week = body.get("days_of_week")
+        time_slot = body.get("time_slot")
+        instructor_id = body.get("instructor_id")
+        max_capacity = body.get("max_capacity", 30)
+        status = body.get("status", "upcoming")
+
+        batch = db_create_batch(
+            course_id=course_id,
+            batch_name=batch_name,
+            batch_code=batch_code,
+            start_date=start_date,
+            end_date=end_date,
+            schedule_type=schedule_type,
+            days_of_week=days_of_week,
+            time_slot=time_slot,
+            instructor_id=instructor_id,
+            max_capacity=max_capacity,
+            status=status,
+        )
+        print("batch:", batch)
+
+        return response(
+            {
+                "message": "Batch created successfully",
+                "batch": batch,
+            },
+            201,
+        )
+
+    except Exception as e:
+        print("CREATE_BATCH_ERROR:", e)
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
+
+def get_all_batches_handler(body, user, path_params=None, search_value=None):
+    """
+    GET /batches
+    Optional filters: course_id, status, search
+    """
+    try:
+        limit = int(body.get("limit", 25))
+        offset = int(body.get("offset", 0))
+
+        search = search_value or body.get("search")
+        course_id = body.get("course_id")
+        status = body.get("status")
+
+        result = db_list_all_batches(
+            limit=limit,
+            offset=offset,
+            search=search,
+            course_id=course_id,
+            status=status
+        )
+
+        return response({
+            "batches": result["batches"],
+            "pagination": {
+                "total": result["total"],
+                "limit": result["limit"],
+                "offset": result["offset"],
+                "hasNext": result["hasNext"],
+                "next_offset": result["next_offset"],
+            }
+        }, 200)
+
+    except Exception as e:
+        print("GET_BATCHES_ERROR:", e)
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
+def update_batch_handler(body, user, path_params=None,search_value=None):
+    """
+    PUT /courses/{course_id}/batches/{batch_id}
+    Body required:
+      - batch_name
+      - batch_code
+      - start_date
+      - end_date
+      - schedule_type
+      - days_of_week
+      - time_slot
+      - instructor_id
+      - max_capacity
+      - status
+    """
+    try:
+        print("UPDATE_BATCH:", body)
+
+        if not path_params or "course_id" not in body or "batch_id" not in path_params:
+            return response({"error": "course_id and batch_id are required in path"}, 400)
+
+        course_id = body["course_id"]
+        batch_id = path_params["batch_id"]
+
+        # Required fields
+        required_fields = [
+            "batch_name",
+            "batch_code",
+            "start_date",
+            "end_date",
+            "schedule_type",
+            "days_of_week",
+            "time_slot",
+            "instructor_id",
+            "max_capacity",
+            "status"
+        ]
+
+        missing = [f for f in required_fields if f not in body]
+        if missing:
+            return response({"error": f"Missing fields: {', '.join(missing)}"}, 400)
+
+        batch = db_update_batch(
+            course_id=course_id,
+            batch_id=batch_id,
+            batch_name=body["batch_name"],
+            batch_code=body["batch_code"],
+            start_date=body["start_date"],
+            end_date=body["end_date"],
+            schedule_type=body["schedule_type"],
+            days_of_week=body["days_of_week"],
+            time_slot=body["time_slot"],
+            instructor_id=body["instructor_id"],
+            max_capacity=body["max_capacity"],
+            status=body["status"]
+        )
+
+        if not batch:
+            return response({"error": "Batch not found"}, 404)
+
+        return response({
+            "message": "Batch updated successfully",
+            "batch": batch
+        }, 200)
+
+    except Exception as e:
+        print("UPDATE_BATCH_ERROR:", e)
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+def delete_batch_handler(body,user,path_params=None,search_value=None):
+    """
+    DELETE /courses/{course_id}/batches/{batch_id}
+    Path params required:
+      - course_id
+      - batch_id
+    """
+    try:
+        if not path_params  or "batch_id" not in path_params:
+            return response({"error": "course_id and batch_id are required in path"}, 400)
+
+        batch_id = path_params["batch_id"]
+
+        deleted = db_delete_batch(batch_id=batch_id)
+
+        if not deleted:
+            return response({"error": "Batch not found"}, 404)
+
+        return response({
+            "message": "Batch deleted successfully"
+        }, 200)
+
+    except Exception as e:
+        print("DELETE_BATCH_ERROR:", e)
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
+def get_batch_students_handler(body, user, path_params=None, search_value=None):
+    """
+    GET /batches/{batch_id}/students
+    Optional filters: search, limit, offset
+    """
+    try:
+        print("GET_BATCH_STUDENTS:", body)
+        if not path_params or "batch_id" not in path_params:
+            return response({"error": "batch_id is required"}, 400)
+
+        batch_id = path_params["batch_id"]
+        limit = int(body.get("limit", 25))
+        offset = int(body.get("offset", 0))
+        search = search_value or body.get("search")
+        print("search:", search)
+        result = db_list_batch_students(
+            batch_id=batch_id,
+            limit=limit,
+            offset=offset,
+            search=search
+        )
+        print("result:", result)
+        return response({
+            "students": result["students"],
+            "pagination": {
+                "total": result["total"],
+                "limit": result["limit"],
+                "offset": result["offset"],
+                "hasNext": result["hasNext"],
+                "next_offset": result["next_offset"],
+            }
+        }, 200)
+
+    except Exception as e:
+        print("GET_BATCH_STUDENTS_ERROR:", e)
+        import traceback
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
 # =====================
 # ROUTES
 # =====================
@@ -1208,6 +1459,8 @@ FIXED_ROUTES = {
     ("POST", "lessons"): {"handler": create_lesson_handler, "roles": None},
     ("POST", "enrollments"): {"handler": create_enrollment_handler, "roles": None},
     ("GET", "enrollments"): {"handler": get_enrollments_handler, "roles": None},
+    ("GET", "batches"): {"handler": get_all_batches_handler, "roles": None},
+    ("POST", "batches"): {"handler": create_batch_handler, "roles": None},
 }
 
 # Parameterized routes (grouped by base path and method)
@@ -1283,7 +1536,37 @@ PARAM_ROUTES = {
         "DELETE": [
             {"pattern": re.compile(r"^enrollments/(?P<enrollment_id>[^/]+)$"), "handler": delete_enrollment_handler, "roles": None},
         ],
+    },
+    "batches": {
+        "GET": [
+            {
+            "pattern": re.compile(
+                r"^batches/(?P<batch_id>[^/]+)/students$"
+            ),
+            "handler": get_batch_students_handler,
+            "roles": None
+          },
+        ],
+         "PUT": [
+            {
+            "pattern": re.compile(
+                r"^batches/(?P<batch_id>[^/]+)$"
+            ),
+            "handler": update_batch_handler,
+            "roles": None
+          }
+        ],
+        "DELETE": [
+            {
+            "pattern": re.compile(
+                r"^batches/(?P<batch_id>[^/]+)$"
+            ),
+            "handler": delete_batch_handler,
+            "roles": None
+          }
+        ],
     }
+
 }
 
 # =========================

@@ -176,7 +176,7 @@ def db_list_courses(
     status: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    List courses with pagination, search, status filtering, and counts of modules & lessons
+    List courses with pagination, search, status filtering, and counts of modules, lessons, and enrolled students
     """
     conn = pg_connect()
     cur = conn.cursor()
@@ -186,17 +186,17 @@ def db_list_courses(
 
         # Search by course title
         if search:
-            where_clauses.append("title ILIKE %s")
+            where_clauses.append("c.title ILIKE %s")
             params.append(f"%{search}%")
 
         # Filter by course status
         if status:
-            where_clauses.append("status = %s")
+            where_clauses.append("c.status = %s")
             params.append(status)
 
         where = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
-        # Fetch courses with module and lesson counts
+        # Fetch courses with module, lesson, and student counts
         cur.execute(
             f"""
             SELECT 
@@ -208,7 +208,8 @@ def db_list_courses(
                 c.created_at, 
                 c.updated_at,
                 COALESCE(m.module_count, 0) AS module_count,
-                COALESCE(l.lesson_count, 0) AS lesson_count
+                COALESCE(l.lesson_count, 0) AS lesson_count,
+                COALESCE(s.student_count, 0) AS student_count
             FROM courses c
             LEFT JOIN (
                 SELECT course_id, COUNT(*) AS module_count
@@ -221,6 +222,12 @@ def db_list_courses(
                 JOIN modules mo ON le.module_id = mo.id
                 GROUP BY mo.course_id
             ) l ON c.id = l.course_id
+            LEFT JOIN (
+                SELECT b.course_id, COUNT(e.enrollment_id) AS student_count
+                FROM batches b
+                LEFT JOIN enrollments e ON b.batch_id = e.batch_id
+                GROUP BY b.course_id
+            ) s ON c.id = s.course_id
             {where}
             ORDER BY c.created_at DESC
             LIMIT %s OFFSET %s
@@ -230,7 +237,7 @@ def db_list_courses(
         courses = rows_to_dicts(cur, cur.fetchall())
 
         # Total count for pagination
-        cur.execute(f"SELECT COUNT(*) FROM courses {where}", tuple(params))
+        cur.execute(f"SELECT COUNT(*) FROM courses c {where}", tuple(params))
         total = cur.fetchone()[0]
 
         return {
@@ -624,12 +631,11 @@ def db_list_batches(course_id: str, limit: int = 25, offset: int = 0, search: Op
             params.append(f"%{search}%")
 
         where = " AND ".join(where_clauses)
-
+        print("WHERE:", where)
         # Fetch batches
         cur.execute(
             f"""
-            SELECT batch_id, course_id, batch_name, batch_code, start_date, end_date,
-                   schedule_type, days_of_week, time_slot, max_capacity, current_enrollment, status
+            SELECT *
             FROM batches
             WHERE {where}
             ORDER BY start_date ASC
@@ -645,7 +651,7 @@ def db_list_batches(course_id: str, limit: int = 25, offset: int = 0, search: Op
             tuple(params)
         )
         total = cur.fetchone()[0]
-
+        print("TOTAL:", total)
         return {
             "batches": batches,
             "total": total,

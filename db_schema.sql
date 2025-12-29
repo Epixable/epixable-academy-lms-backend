@@ -157,7 +157,9 @@ CREATE TABLE batches (
     schedule_type VARCHAR(20) DEFAULT 'weekday', 
     days_of_week TEXT[],                        
     time_slot VARCHAR(100),               
-
+    instructor_id VARCHAR(20) NOT NULL
+        REFERENCES users(user_id)
+        ON DELETE CASCADE,
     max_capacity INT DEFAULT 30,
     current_enrollment INT DEFAULT 0,
 
@@ -188,6 +190,7 @@ INSERT INTO batches (
     '2025-01-15',
     '2025-04-15',
     'weekday',
+    'dd586123-35c1-458d-aeab-5c2611e90a63'
     ARRAY['Mon','Wed','Fri'],
     '10:00 AM – 12:00 PM',
     30,
