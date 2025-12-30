@@ -7,6 +7,23 @@ import datetime
 import uuid
 from typing import Optional, Dict, Any, List
 import pg8000.dbapi as pg8000_dbapi
+import boto3
+s3 = boto3.client("s3")
+BUCKET="course-thumbnail-images"
+
+def delete_s3_objects(keys: list[str]):
+    if not keys:
+        return
+
+    objects = [{"Key": key} for key in keys if key]
+
+    if not objects:
+        return
+
+    s3.delete_objects(
+        Bucket=BUCKET,
+        Delete={"Objects": objects}
+    )
 # ---------------------------
 # PostgreSQL CONNECTION
 # ---------------------------
@@ -289,7 +306,43 @@ def db_update_course(course_id: str, updates: Dict[str, Any]) -> Optional[Dict[s
         conn.close()
 
 def db_delete_course(course_id: str) -> bool:
-    """Delete course by ID"""
+    """Delete a course along with all its S3 assets (thumbnail, lesson videos, resources)"""
+
+    # Fetch course info
+    course = db_get_course(course_id)
+    if not course:
+        return False
+
+    s3_keys = []
+
+    # Add course thumbnail
+    if course.get("thumbnail_url"):
+        s3_keys.append(course["thumbnail_url"])
+
+    # Fetch all lessons for this course with video & resources
+    conn = pg_connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT l.video_s3_key, l.resources_s3_keys
+            FROM lessons l
+            JOIN modules m ON l.module_id = m.id
+            WHERE m.course_id = %s
+        """, (course_id,))
+        
+        for video_s3_key, resources_s3_keys in cur.fetchall():
+            if video_s3_key:
+                s3_keys.append(video_s3_key)
+            if resources_s3_keys:
+                s3_keys.extend(resources_s3_keys)
+    finally:
+        cur.close()
+        conn.close()
+
+    # Delete all S3 objects
+    delete_s3_objects(s3_keys)
+
+    # Delete course from DB (this should cascade if FK constraints exist)
     conn = pg_connect()
     cur = conn.cursor()
     try:
@@ -598,6 +651,19 @@ def db_update_lesson(
         cur.close()
         conn.close()
 def db_delete_lesson(lesson_id: str) -> bool:
+    lesson = db_get_lesson_by_id(lesson_id)
+    if not lesson:
+        return False
+
+    s3_keys = []
+
+    if lesson.get("video_s3_key"):
+        s3_keys.append(lesson["video_s3_key"])
+
+    s3_keys.extend(lesson.get("resources_s3_keys", []))
+
+    delete_s3_objects(s3_keys)
+
     conn = pg_connect()
     cur = conn.cursor()
     try:
@@ -615,6 +681,7 @@ def db_delete_lesson(lesson_id: str) -> bool:
     finally:
         cur.close()
         conn.close()
+
 
 def db_list_batches(course_id: str, limit: int = 25, offset: int = 0, search: Optional[str] = None) -> Dict[str, Any]:
     """

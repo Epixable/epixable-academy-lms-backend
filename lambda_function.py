@@ -8,6 +8,9 @@ from datetime import datetime, date, timedelta
 import jwt
 import secrets
 import hashlib
+import mimetypes
+import traceback
+import boto3
 from db_course import (
     db_create_course,
     db_get_course_by_id,
@@ -60,7 +63,17 @@ from db_batch import (
 # =====================
 SECRET_KEY = os.environ.get("SECRET_KEY", "CHANGE_ME")
 JWT_ALGO = "HS256"
+S3_BUCKET = "course-thumbnail-images"
 
+s3_client = boto3.client("s3")
+
+
+ALLOWED_IMAGE_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/jpg"
+}
 # =====================
 # UTILS
 # =====================
@@ -115,6 +128,20 @@ def create_token(payload: dict):
 def decode_token(token: str):
     return jwt.decode(token, SECRET_KEY, algorithms=[JWT_ALGO])
 
+
+def delete_s3_objects(keys: list[str]):
+    if not keys:
+        return
+
+    objects = [{"Key": key} for key in keys if key]
+
+    if not objects:
+        return
+
+    s3.delete_objects(
+        Bucket=S3_BUCKET,
+        Delete={"Objects": objects}
+    )
 # =====================
 # AUTHORIZATION
 # =====================
@@ -653,6 +680,20 @@ def delete_course_handler(body, user, path_params, search_value=None):
         print("DELETE_COURSE_ERROR:", e)
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
+
+def generate_presigned_get_url(key: str, expires_in: int = 300):
+    if not key:
+        return None
+    try:
+        url = s3_client.generate_presigned_url(
+            ClientMethod="get_object",
+            Params={"Bucket": S3_BUCKET, "Key": key},
+            ExpiresIn=expires_in,
+        )
+        return url
+    except Exception as e:
+        print(f"[ERROR] generate_presigned_get_url for key {key}: {e}")
+        return None
 def get_courses_handler(body, user, path_params=None, search_value=None):
     """
     GET /courses - List courses with pagination, search by title, and optional status filtering
@@ -671,7 +712,9 @@ def get_courses_handler(body, user, path_params=None, search_value=None):
             search=search,
             status=status
         )
-
+        for course in result["courses"]:
+            key = course.get("thumbnail_url")
+            course["thumbnail_url"] = generate_presigned_get_url(key)
         return response({
             "courses": result["courses"],
             "pagination": {
@@ -691,6 +734,8 @@ def get_courses_handler(body, user, path_params=None, search_value=None):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
+
+
 def get_course_by_id_handler(body, user,path_params,search_value=None):
     """GET /courses/:id - Get a single course with modules and lesson info"""
     print("GET_COURSE_BY_ID_HANDLER | START")
@@ -702,7 +747,7 @@ def get_course_by_id_handler(body, user,path_params,search_value=None):
         course = db_get_course_with_modules(course_id)
         if not course:
             return response({"error": "Course not found"}, 404)
-
+        course["thumbnail_url"] = generate_presigned_get_url(course.get("thumbnail_url"))
         return response({"course": course}, 200)
 
     except Exception as e:
@@ -755,10 +800,7 @@ def create_module_handler(body, user, path_params, search_value=None):
         return response({"error": "Internal server error"}, 500)
 
 
-def get_module_with_lessons_handler(body, user, path_params,search_value=None):
-    """
-    GET /courses/{course_id}/modules/{module_id}
-    """
+def get_module_with_lessons_handler(body, user, path_params, search_value=None):
     try:
         course_id = path_params.get("course_id")
         module_id = path_params.get("module_id")
@@ -766,31 +808,30 @@ def get_module_with_lessons_handler(body, user, path_params,search_value=None):
         if not course_id or not module_id:
             return response({"error": "course_id and module_id are required"}, 400)
 
-        # Validate course existence
         if not db_course_exists(course_id):
             return response({"error": "Course not found"}, 404)
 
         module = db_get_module_with_lessons(module_id)
-
         if not module or str(module["course_id"]) != course_id:
             return response({"error": "Module not found"}, 404)
 
-        return response(
-            {
-                "module": {
-                    "module_id": module["id"],
-                    "course_id": module["course_id"],
-                    "course_title": module["course_title"],
-                    "title": module["title"],
-                    "position": module["position"],
-                    "is_published": module["is_published"],
-                    "lesson_count": module["lesson_count"],
-                    "total_duration_minutes": module["total_duration_minutes"],
-                    "lessons": module["lessons"],
-                }
-            },
-            200,
-        )
+        # Convert all lesson S3 keys to presigned URLs
+        lessons = module.get("lessons", [])
+        module["lessons"] = [generate_presigned_urls_for_lesson(lesson) for lesson in lessons]
+
+        return response({
+            "module": {
+                "module_id": module["id"],
+                "course_id": module["course_id"],
+                "course_title": module["course_title"],
+                "title": module["title"],
+                "position": module["position"],
+                "is_published": module["is_published"],
+                "lesson_count": module["lesson_count"],
+                "total_duration_minutes": module["total_duration_minutes"],
+                "lessons": module["lessons"],
+            }
+        }, 200)
 
     except Exception as e:
         print("GET_MODULE_WITH_LESSONS_ERROR:", str(e))
@@ -823,7 +864,7 @@ def get_course_by_id(body, user, path_params,search_value=None):
                     "title": course["title"],
                     "learning_points":course['learning_points'],
                     "description": course["description"],
-                    "thumbnail_url": course.get("thumbnail_url"),
+                    "thumbnail_url": generate_presigned_get_url(course.get("thumbnail_url")),
                     "status": course.get("status"),
                     "created_at": course.get("created_at"),
                     "updated_at": course.get("updated_at"),
@@ -983,12 +1024,26 @@ def delete_module_handler(body, user, path_params, search_value=None):
         print("DELETE_MODULE_ERROR:", e)
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
+def generate_presigned_urls_for_lesson(lesson: dict):
+    """
+    Convert video_s3_key and resources_s3_keys to presigned URLs
+    """
+    if not lesson:
+        return lesson
 
-def get_lesson_handler(body,user,path_params,search_value=None):
-    """
-    GET /lessons/<lesson_id>
-    Fetch a single lesson by ID.
-    """
+    # Video
+    if lesson.get("video_s3_key"):
+        lesson["video_url"] = generate_presigned_get_url(lesson["video_s3_key"])
+    else:
+        lesson["video_url"] = None
+
+    # Resources (list of keys)
+    resources = lesson.get("resources_s3_keys", [])
+    lesson["resources_urls"] = [generate_presigned_get_url(key) for key in resources]
+
+    return lesson
+
+def get_lesson_handler(body, user, path_params, search_value=None):
     try:
         lesson_id = path_params.get("lesson_id")
         if not lesson_id:
@@ -998,12 +1053,17 @@ def get_lesson_handler(body,user,path_params,search_value=None):
         if not lesson:
             return response({"error": "Lesson not found"}, 404)
 
+        # Convert S3 keys to presigned URLs
+        lesson = generate_presigned_urls_for_lesson(lesson)
+
         return response({"lesson": lesson}, 200)
 
     except Exception as e:
         print("GET_LESSON_ERROR:", str(e))
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
+
+
 def delete_lesson_handler(body, user, path_params,search_value=None):
     try:
         print("DELETE_LESSON")
@@ -1436,6 +1496,183 @@ def get_batch_students_handler(body, user, path_params=None, search_value=None):
         import traceback
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
+def generate_thumbnail_upload_url_handler(body, user=None, path_params=None,search_value=None):
+    """
+    POST /courses/thumbnail/upload-url
+
+    Body:
+    {
+        "file_name": "thumbnail.png",
+        "file_id": "optional"
+    }
+
+    Response:
+    {
+        "upload_url": "...",
+        "key": "thumbnails/<file_id>/thumbnail.png",
+        "file_id": "...",
+        "content_type": "image/png"
+    }
+    """
+    try:
+        if not body:
+            return response({"error": "request body required"}, 400)
+
+        file_name = body.get("file_name")
+        file_id = body.get("file_id") or str(uuid.uuid4())
+
+        if not file_name:
+            return response({"error": "file_name required"}, 400)
+
+        safe_file_name = os.path.basename(file_name)
+
+        mime_type, _ = mimetypes.guess_type(safe_file_name)
+        mime_type = mime_type or "image/png"
+
+        if mime_type not in ALLOWED_IMAGE_TYPES:
+            return response(
+                {"error": f"unsupported file type: {mime_type}"},
+                400
+            )
+
+        key = f"thumbnails/{file_id}/{safe_file_name}"
+
+        upload_url = s3_client.generate_presigned_url(
+            ClientMethod="put_object",
+            Params={
+                "Bucket": S3_BUCKET,
+                "Key": key,
+                "ContentType": mime_type
+            },
+            ExpiresIn=300,  # 5 minutes
+        )
+
+        return response(
+            {
+                "upload_url": upload_url,
+                "key": key,
+                "file_id": file_id,
+                "content_type": mime_type,
+            },
+            200,
+        )
+
+    except Exception as e:
+        print("[ERROR] generate_thumbnail_upload_url_handler")
+        print(e)
+        traceback.print_exc()
+        return response({"error": "failed to generate upload url"}, 500)
+
+ALLOWED_FILE_TYPES = ["application/zip", "application/pdf", "image/png", "image/jpeg"]
+
+def generate_resource_upload_url_handler(body, user=None, path_params=None,search_value=None):
+    """
+    POST /courses/resources/upload-url
+    Body:
+    {
+        "file_name": "resources.zip"
+    }
+    Response:
+    {
+        "upload_url": "...",
+        "key": "resources/<uuid>/resources.zip",
+        "file_id": "..."
+    }
+    """
+    try:
+        file_name = body.get("file_name")
+        if not file_name:
+            return response({"error": "file_name required"}, 400)
+
+        safe_file_name = os.path.basename(file_name)
+        mime_type, _ = mimetypes.guess_type(safe_file_name)
+        mime_type = mime_type or "application/octet-stream"
+
+        if mime_type not in ALLOWED_FILE_TYPES:
+            return response({"error": f"unsupported file type: {mime_type}"}, 400)
+
+        file_id = str(uuid.uuid4())
+        key = f"resources/{file_id}/{safe_file_name}"
+
+        upload_url = s3_client.generate_presigned_url(
+            ClientMethod="put_object",
+            Params={"Bucket": S3_BUCKET, "Key": key, "ContentType": mime_type},
+            ExpiresIn=300
+        )
+
+        return response({"upload_url": upload_url, "s3Key": key, "file_id": file_id,"content_type": mime_type}, 200)
+
+    except Exception as e:
+        print(e)
+        return response({"error": "failed to generate upload url"}, 500)
+
+def generate_video_upload_url_handler(body, user=None, path_params=None, search_value=None):
+    """
+    POST /courses/video/upload-url
+
+    Body:
+    {
+        "file_name": "lesson.mp4",
+        "file_id": "optional"
+    }
+
+    Response:
+    {
+        "upload_url": "...",
+        "key": "videos/<file_id>/lesson.mp4",
+        "file_id": "...",
+        "content_type": "video/mp4"
+    }
+    """
+    try:
+        if not body:
+            return response({"error": "request body required"}, 400)
+
+        file_name = body.get("file_name")
+        file_id = body.get("file_id") or str(uuid.uuid4())
+
+        if not file_name:
+            return response({"error": "file_name required"}, 400)
+
+        safe_file_name = os.path.basename(file_name)
+        mime_type, _ = mimetypes.guess_type(safe_file_name)
+        mime_type = mime_type or "video/mp4"
+
+        # Allow only common video types
+        if mime_type not in ["video/mp4", "video/avi", "video/mov", "video/mkv"]:
+            return response(
+                {"error": f"unsupported video type: {mime_type}"},
+                400
+            )
+
+        key = f"videos/{file_id}/{safe_file_name}"
+
+        upload_url = s3_client.generate_presigned_url(
+            ClientMethod="put_object",
+            Params={
+                "Bucket": S3_BUCKET,
+                "Key": key,
+                "ContentType": mime_type
+            },
+            ExpiresIn=3600,  # 1 hour
+        )
+
+        return response(
+            {
+                "upload_url": upload_url,
+                "key": key,
+                "file_id": file_id,
+                "content_type": mime_type,
+            },
+            200,
+        )
+
+    except Exception as e:
+        print("[ERROR] generate_video_upload_url_handler")
+        print(e)
+        traceback.print_exc()
+        return response({"error": "failed to generate upload url"}, 500)
+
 
 # =====================
 # ROUTES
@@ -1528,6 +1765,27 @@ PARAM_ROUTES = {
             {"pattern": re.compile(r"^courses/(?P<course_id>[^/]+)$"), "handler": delete_course_handler, "roles": None},
         ],
         "POST": [
+            {
+    "pattern": re.compile(
+        r"^courses/thumbnail/upload-url$"
+    ),
+    "handler": generate_thumbnail_upload_url_handler,
+    "roles": None
+},
+ {
+    "pattern": re.compile(
+        r"^courses/resource/upload-url$"
+    ),
+    "handler": generate_resource_upload_url_handler,
+    "roles": None
+},
+{
+    "pattern": re.compile(
+        r"^courses/video/upload-url$"
+    ),
+    "handler": generate_video_upload_url_handler,
+    "roles": None
+},
             {"pattern": re.compile(r"^courses/(?P<course_id>[^/]+)/modules$"), "handler": create_module_handler, "roles": None}
         ],
     }
