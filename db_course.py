@@ -869,3 +869,223 @@ def db_delete_enrollment(enrollment_id: str) -> bool:
     finally:
         cur.close()
         conn.close()
+
+from typing import Dict, Any
+
+def db_list_enrollments_for_student(
+    student_id: str,
+    limit: int = 25,
+    offset: int = 0,
+    search: str = None,
+    status: str = None
+) -> Dict[str, Any]:
+    """
+    List enrollments for a specific student with course and batch info.
+    Supports optional search (course name, enrollment number) and status filter.
+    """
+    conn = pg_connect()
+    cur = conn.cursor()
+    try:
+        params = [student_id] 
+        where_clauses = ["e.student_id = %s"]  # Filter for this student
+
+        # Filter by search (course name or enrollment number)
+        if search:
+            where_clauses.append(
+                "(e.enrollment_number ILIKE %s OR c.title ILIKE %s)"
+            )
+            like = f"%{search}%"
+            params.extend([like, like])
+
+        # Filter by status
+        if status:
+            where_clauses.append("e.status = %s")
+            params.append(status)
+
+        where = f"WHERE {' AND '.join(where_clauses)}"
+
+        # Main query with joins
+        cur.execute(
+            f"""
+            SELECT
+                e.enrollment_id,
+                e.enrollment_number,
+                e.status AS enrollment_status,
+                e.start_date,
+                c.id AS course_id,
+                c.title AS course_name,
+                b.batch_name,
+                b.start_date || ' – ' || b.end_date || ' (' || b.time_slot || ')' AS batch_time
+            FROM enrollments e
+            JOIN courses c ON e.course_id = c.id
+            JOIN batches b ON e.batch_id = b.batch_id
+            {where}
+            ORDER BY e.created_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            tuple(params + [limit, offset])
+        )
+        rows = cur.fetchall()
+        columns = [c[0] for c in cur.description]
+        enrollments = [dict(zip(columns, row)) for row in rows]
+
+        # Get total count
+        cur.execute(
+            f"""
+            SELECT COUNT(*) 
+            FROM enrollments e
+            JOIN courses c ON e.course_id = c.id
+            JOIN batches b ON e.batch_id = b.batch_id
+            {where}
+            """,
+            tuple(params)
+        )
+        total = cur.fetchone()[0]
+
+        return {
+            "enrollments": enrollments,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "hasNext": (offset + limit) < total,
+            "next_offset": offset + limit if (offset + limit) < total else None,
+        }
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+from typing import List, Dict
+
+def db_get_student_course_details(student_id: str, course_id: str) -> Dict:
+    """
+    Fetch a student's active enrollment for a given course, including:
+    - course info
+    - batch info
+    - modules with lessons, lesson counts, and durations
+    Uses print statements for logging.
+    Raises Exception if no enrollment found or DB error occurs.
+    """
+    conn = None
+    cur = None
+    try:
+        conn = pg_connect()
+        cur = conn.cursor()  # normal cursor
+
+        print(f"[INFO] Fetching enrollment for student_id={student_id}, course_id={course_id}")
+        # Fetch enrollment with course and batch info
+        cur.execute(
+            """
+            SELECT
+                c.id,
+                c.title,
+                c.description,
+                c.learning_points,
+                e.progress_percentage
+            FROM enrollments e
+            JOIN courses c ON e.course_id = c.id
+            JOIN batches b ON e.batch_id = b.batch_id
+            WHERE e.student_id = %s
+              AND e.course_id = %s
+              AND e.status ILIKE 'active'
+            """,
+            (student_id, course_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            print(f"[ERROR] No active enrollment found for student {student_id} in course {course_id}")
+            raise Exception(f"No active enrollment found for student {student_id} in course {course_id}")
+
+        # Map columns manually
+        enrollment_cols = [
+            "course_id", "course_title", "course_description",
+            "course_learning_points", "progress_percentage"
+        ]
+        enrollment = dict(zip(enrollment_cols, row))
+        print(f"[INFO] Enrollment fetched successfully: {enrollment['course_title']}")
+
+        # Fetch modules and lessons
+        print(f"[INFO] Fetching modules and lessons for course_id={course_id}")
+        cur.execute(
+            """
+            SELECT
+                m.id,
+                m.title,
+                m.description,
+                m.position,
+                m.is_published,
+                l.id,
+                l.title,
+                l.type,
+                l.content,
+                l.video_s3_key,
+                l.duration_minutes,
+                l.position,
+                l.is_published,
+                l.resources_s3_keys
+            FROM modules m
+            LEFT JOIN lessons l ON l.module_id = m.id
+            WHERE m.course_id = %s
+            ORDER BY m.position, l.position
+            """,
+            (course_id,),
+        )
+
+        rows = cur.fetchall()
+        print(f"[INFO] {len(rows)} rows fetched for modules and lessons")
+
+        modules_map = {}
+        for r in rows:
+            # Map tuple to dict manually
+            module_id = r[0]
+            if module_id not in modules_map:
+                modules_map[module_id] = {
+                    "module_id": r[0],
+                    "module_title": r[1],
+                    "module_description": r[2],
+                    "module_position": r[3],
+                    "module_published": r[4],
+                    "lessons": [],
+                    "lesson_count": 0,
+                    "total_duration_minutes": 0,
+                }
+
+            if r[5]:  # lesson_id
+                lesson = {
+                    "lesson_id": r[5],
+                    "lesson_title": r[6],
+                    "lesson_type": r[7],
+                    "lesson_content": r[8],
+                    "lesson_video_s3_key": r[9],
+                    "lesson_duration_minutes": r[10],
+                    "lesson_position": r[11],
+                    "lesson_is_published": r[12],
+                    "module_resource_s3_key": r[13],
+                }
+                modules_map[module_id]["lessons"].append(lesson)
+                modules_map[module_id]["lesson_count"] += 1
+                modules_map[module_id]["total_duration_minutes"] += r[10] or 0
+
+        modules = sorted(modules_map.values(), key=lambda m: m["module_position"])
+        print(f"[INFO] {len(modules)} modules processed")
+
+        # Aggregate totals
+        enrollment["modules"] = modules
+        enrollment["module_count"] = len(modules)
+        enrollment["total_lessons"] = sum(m["lesson_count"] for m in modules)
+        enrollment["total_duration_minutes"] = sum(m["total_duration_minutes"] for m in modules)
+
+        print(f"[INFO] Total lessons: {enrollment['total_lessons']}, Total duration: {enrollment['total_duration_minutes']} mins")
+        return enrollment
+
+    except Exception as e:
+        print(f"[ERROR] Exception occurred: {e}")
+        raise
+
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+        print("[INFO] Database connection closed")

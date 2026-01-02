@@ -31,7 +31,9 @@ from db_course import (
     db_list_batches,
     db_create_enrollment,
     db_list_enrollments,
-    db_delete_enrollment
+    db_delete_enrollment,
+    db_list_enrollments_for_student,
+    db_get_student_course_details
 )
 from db import (
     db_user_exists, 
@@ -694,6 +696,8 @@ def generate_presigned_get_url(key: str, expires_in: int = 300):
     except Exception as e:
         print(f"[ERROR] generate_presigned_get_url for key {key}: {e}")
         return None
+
+
 def get_courses_handler(body, user, path_params=None, search_value=None):
     """
     GET /courses - List courses with pagination, search by title, and optional status filtering
@@ -1673,6 +1677,147 @@ def generate_video_upload_url_handler(body, user=None, path_params=None, search_
         traceback.print_exc()
         return response({"error": "failed to generate upload url"}, 500)
 
+def get_student_enrollments_handler(body, user, path_params=None, search_value=None):
+    """
+    GET /enrollments/student
+    Fetch enrollments for the student from JWT token.
+    """
+    try:
+        # if not user:
+        #     return response({"error": "Unauthorized"}, 401)
+
+        # # Mocking/extracting student_id from token
+        # student_id = user.get("student_id")
+        # if not student_id:
+        #     return response({"error": "Student ID not found in token"}, 401)
+        student_id="STU55781" 
+        # Optional pagination from body
+        limit = int(body.get("limit", 25))
+        offset = int(body.get("offset", 0))
+
+        # Optional search/status filters (frontend can send in body)
+        search = body.get("search", "").strip() or None
+        status = body.get("status", "").strip() or None
+
+        # Fetch enrollments from DB filtered by student_id
+        enrollments = db_list_enrollments_for_student(
+            limit=limit,
+            offset=offset,
+            search=search,
+            status=status,
+            student_id=student_id  # critical filter
+        )
+
+        return response({
+            "student_id": student_id,
+            "enrollments": enrollments.get("enrollments", []),
+            "pagination": {
+                "total": enrollments.get("total", 0),
+                "limit": enrollments.get("limit", limit),
+                "offset": enrollments.get("offset", offset),
+                "hasNext": enrollments.get("hasNext", False),
+                "next_offset": enrollments.get("next_offset", None)
+            }
+        }, 200)
+
+    except Exception as e:
+        print("GET_STUDENT_ENROLLMENTS_ERROR:", e)
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
+
+def get_students_enrollments_handler(body, user, path_params, search_value=None):
+    """
+    GET /students/{student_id}/enrollments
+    Returns all active enrollments for a student.
+    Throws 404 if student not enrolled in any course.
+    """
+    try:
+        student_id = 'STU55781'
+        # course_id = path_params.get("course_id") or {}
+
+        if not student_id:
+            return response({"error": "Student ID is required"}, 400)
+
+        # Check if student exists
+        student = db_get_student_by_id(student_id)
+        if not student:
+            return response({"error": "Student not found"}, 404)
+
+        # Fetch active enrollments
+        enrollments = db_get_student_course_details(student_id,course_id)
+
+        if not enrollments:
+            return response(
+                {"error": "Student is not enrolled in any courses"}, 
+                404
+            )
+
+        return response({
+            "enrollments": enrollments,
+            "total_enrollments": len(enrollments)
+        }, 200)
+
+    except Exception as e:
+        print("GET_STUDENT_ENROLLMENTS_ERROR:", e)
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
+
+def get_student_course_handler(body, user, path_params, search_value=None):
+    """
+    GET /students/{student_id}/enrollments
+    Returns all active enrollments for a student.
+    Converts lesson video_s3_key and resources_s3_keys to presigned URLs using map.
+    Throws 404 if student not enrolled in any course.
+    """
+    try:
+        student_id = 'STU55781'  # Replace with path_params if needed
+        course_id = path_params.get("course_id")  # Optional if you want course-level
+
+        if not student_id:
+            return response({"error": "Student ID is required"}, 400)
+
+        # Check if student exists
+        student = db_get_student_by_id(student_id)
+        if not student:
+            return response({"error": "Student not found"}, 404)
+
+        # Fetch active enrollment
+        enrollment = db_get_student_course_details(student_id, course_id)
+
+        if not enrollment:
+            return response(
+                {"error": "Student is not enrolled in any courses"},
+                404
+            )
+
+        # Helper to convert a single lesson
+        def convert_lesson_s3(lesson: dict) -> dict:
+            lesson = lesson.copy()  # avoid mutating original
+            # Video presigned URL
+            lesson["video_url"] = generate_presigned_get_url(lesson.pop("lesson_video_s3_key", None))
+            # Resources presigned URLs
+            resources_keys = lesson.pop("module_resource_s3_key", []) or []
+            lesson["resources_urls"] = [generate_presigned_get_url(k) for k in resources_keys if k]
+            return lesson
+
+        # Apply map to all lessons in all modules
+        for module in enrollment.get("modules", []):
+            module["lessons"] = list(map(convert_lesson_s3, module.get("lessons", [])))
+
+        return response({
+            "enrollments": enrollment,
+            "total_enrollments": 1  # single enrollment in this API
+        }, 200)
+
+    except Exception as e:
+        print("GET_STUDENT_ENROLLMENTS_ERROR:", e)
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
+
+
+
 
 # =====================
 # ROUTES
@@ -1791,6 +1936,16 @@ PARAM_ROUTES = {
     }
     ,
     "enrollments": {
+        "GET": [
+            {
+            "pattern": re.compile(
+                r"^enrollments/students$"
+            ),
+            "handler": get_student_enrollments_handler,
+            "roles": None
+          },
+           {"pattern": re.compile(r"^enrollments/(?P<course_id>[^/]+)/student$"),"handler":get_student_course_handler ,"roles": None},
+        ],
         "DELETE": [
             {"pattern": re.compile(r"^enrollments/(?P<enrollment_id>[^/]+)$"), "handler": delete_enrollment_handler, "roles": None},
         ],
