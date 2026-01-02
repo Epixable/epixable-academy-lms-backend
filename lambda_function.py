@@ -41,6 +41,7 @@ from db import (
     db_list_users,
     db_update_user,
     db_delete_user,
+    db_signin,
     db_get_user_by_email
 )
 
@@ -170,37 +171,37 @@ def save_email_information(data):
 # =====================
 # USER HANDLERS
 # =====================
-def signin_handler(body, *_):
-    email = body.get("email", "").lower().strip()
-    password = body.get("password", "")
-    user = db_get_user_by_email(email)
+# def signin_handler(body, *_):
+#     email = body.get("email", "").lower().strip()
+#     password = body.get("password", "")
+#     user = db_get_user_by_email(email)
     
-    if not user:
-        return response({"error": "Invalid credentials"}, 401)
-    if not verify_password(password, user["password_hash"]):
-        return response({"error": "Invalid credentials"}, 401)
+#     if not user:
+#         return response({"error": "Invalid credentials"}, 401)
+#     if not verify_password(password, user["password_hash"]):
+#         return response({"error": "Invalid credentials"}, 401)
     
-    token = create_token({
-        "email": email,
-        "role": user["role"]
-    })
-    return response({
-        "token": token,
-        "email": email,
-        "role": user["role"]
-    })
+#     token = create_token({
+#         "email": email,
+#         "role": user["role"]
+#     })
+#     return response({
+#         "token": token,
+#         "email": email,
+#         "role": user["role"]
+#     })
 
-def create_user_handler(body, *_):
+def create_user_handler(body,user,path_params=None,search_value=None):
     try:
         print("CREATE USER:", body)
         email = body.get("email", "").lower().strip()
-        role = body.get("role", "user").lower().strip()
-        full_name = body.get("name", "").strip()
+        role = body.get("role", "").lower().strip()
+        full_name = body.get("full_name", "").strip()
         status = body.get("status", "Active").strip()
         
         if not email:
             return response({"error": "Email is required"}, 400)
-        if role not in ("admin", "user", "teacher", "student"):
+        if role not in ("admin", "teacher", "student"):
             return response({"error": "Invalid role"}, 400)
         if status not in ("Active", "Inactive"):
             return response({"error": "Invalid status"}, 400)
@@ -292,7 +293,7 @@ def update_user_handler(body, user, path_params,search_value=None):
         
         if "role" in body:
             role = body["role"].lower().strip()
-            if role not in ("admin", "user", "teacher", "student"):
+            if role not in ("admin", "teacher", "student"):
                 return response({"error": "Invalid role"}, 400)
             updates["role"] = role
         
@@ -1816,8 +1817,42 @@ def get_student_course_handler(body, user, path_params, search_value=None):
         traceback.print_exc()
         return response({"error": "Internal server error"}, 500)
 
+def signin_handler(body, user,path_params=None,search_value=None):
+    try:
+        print("IN Sign in handler",body)
+        email = body.get("email", "").lower().strip()
+        password = body.get("password", "")
 
+        if not email or not password:
+            return response({"error": "Email and password are required"}, 400)
 
+        user = db_signin(email, password)
+        if not user:
+            return response({"error": "Invalid credentials"}, 401)
+
+        if user["status"] != "Active":
+            return response({"error": "Account is inactive"}, 403)
+
+        token = create_token({
+            "sub": user["user_id"],
+            "email": user["email"],
+            "role": user["role"],
+        })
+        print("user role",user["role"])
+        return response({
+            "token": token,
+            "user": {
+                "user_id": user["user_id"],
+                "email": user["email"],
+                "full_name": user["full_name"],
+                "role": user["role"],
+            }
+        }, 200)
+
+    except Exception as e:
+        print("SIGNIN_HANDLER_ERROR:", str(e))
+        traceback.print_exc()
+        return response({"error": "Internal server error"}, 500)
 
 # =====================
 # ROUTES
@@ -1831,7 +1866,7 @@ import re
 
 # Fixed routes (O(1) lookup)
 FIXED_ROUTES = {
-    ("POST", "signin"): {"handler": signin_handler, "roles": None},
+    ("POST", "login"): {"handler": signin_handler, "roles": None},
     ("POST", "users"): {"handler": create_user_handler, "roles": None},
     ("GET", "users"): {"handler": get_users_handler, "roles": None},
     ("GET", "students"): {"handler": get_students_handler, "roles": None},

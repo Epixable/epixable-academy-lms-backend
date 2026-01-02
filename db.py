@@ -65,6 +65,7 @@ def db_create_user(
     email = email.lower().strip()
     user_id = f"US{random.randint(10000, 99999)}"
     password = secrets.token_urlsafe(10)
+    print("password", password)
     password_hash = hash_password(password)
     now = _now_iso()
 
@@ -126,6 +127,7 @@ def db_list_users(
     conn = pg_connect()
     cur = conn.cursor()
     try:
+        print("search", search)
         params = []
         where = ""
         if search:
@@ -256,6 +258,7 @@ def db_update_user_password(email: str, new_password: str) -> bool:
 
 def db_signin(email: str, password: str) -> Optional[Dict[str, Any]]:
     user = db_get_user_by_email(email)
+    print("user", user)
     if not user:
         return None
 
